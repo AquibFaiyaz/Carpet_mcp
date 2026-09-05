@@ -4,6 +4,7 @@ import cors from 'cors';
 import { randomUUID } from 'crypto';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import {
   CallToolRequestSchema,
@@ -51,7 +52,7 @@ const GetColorPalettesSchema = z.object({
   styleFilter: z.string().optional().describe('Filter color palettes by carpet style.')
 });
 
-// Tool Definitions
+// Tool Definitions for MCP
 const TOOL_DEFINITIONS = [
   {
     name: 'get_carpet_design_styles',
@@ -192,131 +193,322 @@ function configureMcpServer(server: Server) {
   });
 }
 
-// ========== HTTP Server (Streamable HTTP for ChatGPT + REST API) ==========
+function createConfiguredServer(): Server {
+  const server = new Server(
+    { name: 'carpet-design-mcp', version: '2.0.0' },
+    { capabilities: { tools: {} } }
+  );
+  configureMcpServer(server);
+  return server;
+}
+
+// ========== HTTP Server (SSE Transport + Streamable HTTP + ChatGPT Actions) ==========
 async function startHttpServer() {
   const app = express();
   app.use(cors());
   app.use(express.json());
 
-  // Track active transports by session ID
-  const transports = new Map<string, StreamableHTTPServerTransport>();
+  // Active transports
+  const sseTransports = new Map<string, SSEServerTransport>();
+  const streamableTransports = new Map<string, StreamableHTTPServerTransport>();
+
+  const serverInfo = {
+    name: 'Carpet Design Intelligence MCP Server',
+    version: '2.0.0',
+    status: 'active',
+    mcpEndpoint: 'https://aquib.online/mcp',
+    mcpSseEndpoint: 'https://aquib.online/mcp/sse',
+    openApiSchema: 'https://aquib.online/mcp/openapi.json',
+    tools: TOOL_DEFINITIONS.map(t => t.name)
+  };
 
   // Health check
   app.get('/health', (_req: Request, res: Response) => {
+    res.json(serverInfo);
+  });
+
+  // OpenAPI 3.1.0 schema for ChatGPT Custom GPT Actions
+  app.get(['/openapi.json', '/mcp/openapi.json'], (_req: Request, res: Response) => {
     res.json({
-      name: 'Carpet Design Intelligence MCP Server',
-      version: '2.0.0',
-      status: 'active',
-      mcp: 'https://aquib.online/mcp',
-      tools: TOOL_DEFINITIONS.map(t => t.name)
+      openapi: '3.1.0',
+      info: {
+        title: 'Carpet Design Intelligence API for ChatGPT',
+        version: '2.0.0',
+        description: 'AI Prompt Engineering and Craftsman Knowledge API for Indian Carpet & Area Rug Exporters.'
+      },
+      servers: [
+        { url: 'https://aquib.online/mcp' }
+      ],
+      paths: {
+        '/api/generate_carpet_design_prompt': {
+          post: {
+            summary: 'Generate AI carpet design prompt',
+            operationId: 'generate_carpet_design_prompt',
+            requestBody: {
+              required: true,
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    required: ['style'],
+                    properties: {
+                      style: {
+                        type: 'string',
+                        enum: ['japandi', 'vintage_persian', 'turkish_oushak', 'modern_abstract', 'moroccan_berber', 'scandinavian_kilim', 'mughal_heritage']
+                      },
+                      motifs: { type: 'string' },
+                      borderStyle: { type: 'string' },
+                      medallionType: { type: 'string' },
+                      weavingTexture: { type: 'string' },
+                      fiberBlend: { type: 'string' },
+                      colorPalette: { type: 'array', items: { type: 'string' } },
+                      finishEffects: { type: 'string' },
+                      targetAi: { type: 'string', enum: ['midjourney', 'flux', 'gemini', 'dalle3'] },
+                      seamlessTile: { type: 'boolean' },
+                      aspectRatio: { type: 'string' }
+                    }
+                  }
+                }
+              }
+            },
+            responses: {
+              '200': { description: 'Generated AI prompt with design breakdown' }
+            }
+          }
+        },
+        '/api/refine_carpet_design_concept': {
+          post: {
+            summary: 'Refine a raw design idea into a production AI prompt',
+            operationId: 'refine_carpet_design_concept',
+            requestBody: {
+              required: true,
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    required: ['conceptDescription'],
+                    properties: {
+                      conceptDescription: { type: 'string' },
+                      desiredStyle: {
+                        type: 'string',
+                        enum: ['japandi', 'vintage_persian', 'turkish_oushak', 'modern_abstract', 'moroccan_berber', 'scandinavian_kilim', 'mughal_heritage']
+                      },
+                      targetAi: { type: 'string', enum: ['midjourney', 'flux', 'gemini', 'dalle3'] }
+                    }
+                  }
+                }
+              }
+            },
+            responses: {
+              '200': { description: 'Refined prompt with craftsmanship terminology' }
+            }
+          }
+        },
+        '/api/get_carpet_design_styles': {
+          post: {
+            summary: 'Get detailed specs for carpet design styles',
+            operationId: 'get_carpet_design_styles',
+            requestBody: {
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      category: {
+                        type: 'string',
+                        enum: ['japandi', 'vintage_persian', 'turkish_oushak', 'modern_abstract', 'moroccan_berber', 'scandinavian_kilim', 'mughal_heritage']
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            responses: {
+              '200': { description: 'Carpet style specifications' }
+            }
+          }
+        },
+        '/api/get_carpet_color_palettes': {
+          post: {
+            summary: 'Get curated yarn color palettes',
+            operationId: 'get_carpet_color_palettes',
+            requestBody: {
+              content: {
+                'application/json': {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      styleFilter: { type: 'string' }
+                    }
+                  }
+                }
+              }
+            },
+            responses: {
+              '200': { description: 'Yarn color palettes' }
+            }
+          }
+        }
+      }
     });
   });
 
-  // Streamable HTTP MCP endpoint — handles POST (messages) and GET (SSE stream) and DELETE (session close)
-  // Nginx proxies /mcp/ -> localhost:3005/, so we handle both / and /mcp
-  app.all(['/', '/mcp'], async (req: Request, res: Response) => {
-    // Return health info for browser GET without MCP headers
-    if (req.method === 'GET' && !req.headers['accept']?.includes('text/event-stream')) {
-      res.json({
-        name: 'Carpet Design Intelligence MCP Server',
-        version: '2.0.0',
-        status: 'active',
-        mcp: 'https://aquib.online/mcp',
-        tools: TOOL_DEFINITIONS.map(t => t.name)
-      });
+  // ========== SSE Endpoint (for ChatGPT MCP SSE probe and SSE connections) ==========
+  // When ChatGPT or any MCP client probes with GET and Accept: text/event-stream,
+  // or accesses /sse or /mcp/sse, establish an SSEServerTransport.
+  const handleSseConnection = async (req: Request, res: Response) => {
+    console.log(`[MCP SSE] Incoming connection from ${req.ip} to ${req.originalUrl || req.url}`);
+    // Endpoint for client to POST JSON-RPC messages to
+    const transport = new SSEServerTransport('/mcp/messages', res);
+    const server = createConfiguredServer();
+
+    transport.onclose = () => {
+      console.log(`[MCP SSE] Closed session: ${transport.sessionId}`);
+      sseTransports.delete(transport.sessionId);
+    };
+
+    sseTransports.set(transport.sessionId, transport);
+    await server.connect(transport);
+    console.log(`[MCP SSE] Active session established: ${transport.sessionId}`);
+  };
+
+  app.get(['/sse', '/mcp/sse'], handleSseConnection);
+
+  // GET / or /mcp:
+  // If Accept header contains text/event-stream -> SSE connection! (ChatGPT probe)
+  // Otherwise -> Return health info JSON
+  app.get(['/', '/mcp', '/mcp/'], async (req: Request, res: Response) => {
+    if (req.headers['accept']?.includes('text/event-stream')) {
+      return handleSseConnection(req, res);
+    }
+    res.json(serverInfo);
+  });
+
+  // ========== MCP Messages Endpoint (POST) ==========
+  // Receives JSON-RPC messages for established SSE sessions
+  const handleSsePostMessage = async (req: Request, res: Response) => {
+    const sessionId = (req.query.sessionId as string) || (req.headers['mcp-session-id'] as string);
+    if (!sessionId) {
+      res.status(400).json({ error: 'Missing sessionId in query parameter or mcp-session-id header' });
       return;
     }
-    // Handle DELETE for session termination
-    if (req.method === 'DELETE') {
-      const sessionId = req.headers['mcp-session-id'] as string | undefined;
-      if (sessionId && transports.has(sessionId)) {
-        const transport = transports.get(sessionId)!;
-        await transport.close();
-        transports.delete(sessionId);
-        res.status(200).end();
-      } else {
-        res.status(404).end();
+
+    const transport = sseTransports.get(sessionId);
+    if (!transport) {
+      res.status(404).json({ error: `Session not found: ${sessionId}` });
+      return;
+    }
+
+    try {
+      await transport.handlePostMessage(req, res, req.body);
+    } catch (err: any) {
+      console.error('[MCP SSE] Error handling message:', err);
+      if (!res.headersSent) {
+        res.status(500).json({ error: err?.message || String(err) });
       }
-      return;
+    }
+  };
+
+  app.post(['/mcp/messages', '/messages', '/mcp/message', '/message'], handleSsePostMessage);
+
+  // POST / or /mcp:
+  // If sessionId is present -> SSE message handler
+  // If no sessionId -> Streamable HTTP transport (for modern Streamable HTTP MCP clients)
+  app.post(['/', '/mcp', '/mcp/'], async (req: Request, res: Response) => {
+    const sessionId = (req.query.sessionId as string) || (req.headers['mcp-session-id'] as string);
+
+    // If session belongs to SSE transport
+    if (sessionId && sseTransports.has(sessionId)) {
+      return handleSsePostMessage(req, res);
     }
 
-    // For GET and POST, check for existing session
-    const sessionId = req.headers['mcp-session-id'] as string | undefined;
-
-    if (sessionId && transports.has(sessionId)) {
-      // Existing session
-      const transport = transports.get(sessionId)!;
+    // If session belongs to Streamable HTTP transport
+    if (sessionId && streamableTransports.has(sessionId)) {
+      const transport = streamableTransports.get(sessionId)!;
       await transport.handleRequest(req, res, req.body);
       return;
     }
 
-    if ((req.method === 'POST' || req.method === 'GET') && !sessionId) {
-      // New session — create server + transport
+    // New Streamable HTTP session initialization
+    if (!sessionId) {
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => randomUUID(),
       });
-
-      const server = new Server(
-        { name: 'carpet-design-mcp', version: '2.0.0' },
-        { capabilities: { tools: {} } }
-      );
-
-      configureMcpServer(server);
+      const server = createConfiguredServer();
 
       transport.onclose = () => {
         if (transport.sessionId) {
-          transports.delete(transport.sessionId);
+          streamableTransports.delete(transport.sessionId);
         }
       };
 
       await server.connect(transport);
 
       if (transport.sessionId) {
-        transports.set(transport.sessionId, transport);
+        streamableTransports.set(transport.sessionId, transport);
       }
 
       await transport.handleRequest(req, res, req.body);
       return;
     }
 
-    // GET without session or POST with invalid session
-    res.status(400).json({ error: 'Bad Request: No valid session. Send an initialize request first.' });
+    res.status(404).json({ error: 'Session not found' });
   });
 
-  // REST API Endpoints (for direct HTTP calls / ChatGPT Actions fallback)
-  app.post('/api/generate_carpet_design_prompt', (req: Request, res: Response) => {
+  // DELETE for session termination
+  app.delete(['/', '/mcp', '/mcp/messages', '/messages'], async (req: Request, res: Response) => {
+    const sessionId = (req.query.sessionId as string) || (req.headers['mcp-session-id'] as string);
+    if (sessionId) {
+      if (sseTransports.has(sessionId)) {
+        const t = sseTransports.get(sessionId)!;
+        await t.close();
+        sseTransports.delete(sessionId);
+        res.status(200).end();
+        return;
+      }
+      if (streamableTransports.has(sessionId)) {
+        const t = streamableTransports.get(sessionId)!;
+        await t.close();
+        streamableTransports.delete(sessionId);
+        res.status(200).end();
+        return;
+      }
+    }
+    res.status(404).end();
+  });
+
+  // ========== REST API Endpoints (for direct HTTP calls & ChatGPT Actions) ==========
+  app.post(['/api/generate_carpet_design_prompt', '/mcp/api/generate_carpet_design_prompt'], (req: Request, res: Response) => {
     try { res.json(handleToolCall('generate_carpet_design_prompt', req.body)); }
-    catch (err: any) { res.status(400).json({ error: err?.message }); }
+    catch (err: any) { res.status(400).json({ error: err?.message || String(err) }); }
   });
 
-  app.post('/api/refine_carpet_design_concept', (req: Request, res: Response) => {
+  app.post(['/api/refine_carpet_design_concept', '/mcp/api/refine_carpet_design_concept'], (req: Request, res: Response) => {
     try { res.json(handleToolCall('refine_carpet_design_concept', req.body)); }
-    catch (err: any) { res.status(400).json({ error: err?.message }); }
+    catch (err: any) { res.status(400).json({ error: err?.message || String(err) }); }
   });
 
-  app.post('/api/get_carpet_design_styles', (req: Request, res: Response) => {
+  app.post(['/api/get_carpet_design_styles', '/mcp/api/get_carpet_design_styles'], (req: Request, res: Response) => {
     try { res.json(handleToolCall('get_carpet_design_styles', req.body)); }
-    catch (err: any) { res.status(400).json({ error: err?.message }); }
+    catch (err: any) { res.status(400).json({ error: err?.message || String(err) }); }
   });
 
-  app.post('/api/get_carpet_color_palettes', (req: Request, res: Response) => {
+  app.post(['/api/get_carpet_color_palettes', '/mcp/api/get_carpet_color_palettes'], (req: Request, res: Response) => {
     try { res.json(handleToolCall('get_carpet_color_palettes', req.body)); }
-    catch (err: any) { res.status(400).json({ error: err?.message }); }
+    catch (err: any) { res.status(400).json({ error: err?.message || String(err) }); }
   });
 
   app.listen(PORT, () => {
     console.log(`Carpet Design MCP Server running on http://localhost:${PORT}`);
-    console.log(`ChatGPT MCP endpoint: https://aquib.online/mcp`);
+    console.log(`- MCP SSE Probe / URL: https://aquib.online/mcp`);
+    console.log(`- MCP SSE Direct: https://aquib.online/mcp/sse`);
+    console.log(`- OpenAPI 3.1.0: https://aquib.online/mcp/openapi.json`);
   });
 }
 
 // ========== STDIO Mode ==========
 if (MODE === 'stdio') {
-  const server = new Server(
-    { name: 'carpet-design-mcp', version: '2.0.0' },
-    { capabilities: { tools: {} } }
-  );
-  configureMcpServer(server);
+  const server = createConfiguredServer();
   const transport = new StdioServerTransport();
   server.connect(transport).then(() => {
     console.error('Carpet Design MCP Server running on stdio');
