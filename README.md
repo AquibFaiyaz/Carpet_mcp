@@ -1,5 +1,7 @@
 # Carpet Design Intelligence MCP Server (`carpet-design-mcp`)
 
+![CI/CD Pipeline](https://github.com/AquibFaiyaz/Carpet_mcp/actions/workflows/deploy.yml/badge.svg)
+
 A specialized **Model Context Protocol (MCP)** server built for Indian carpet exporters, manufacturers, and interior designers to design, validate, and sell rugs overseas.
 
 This server bridges **overseas market intelligence (Etsy/US/EU trends)**, **AI prompt engineering (Midjourney, FLUX, Gemini, DALL-E 3)**, **Indian weaving specifications (Bhadohi, Jaipur, Panipat)**, and **Etsy SEO listing generation**.
@@ -8,25 +10,19 @@ This server bridges **overseas market intelligence (Etsy/US/EU trends)**, **AI p
 
 ## Features & Available Tools
 
-### 1. `get_carpet_market_trends`
-* **Purpose**: Queries market intelligence profiles for major overseas target regions (US, EU, UK, GCC).
-* **Returns**: Recommended styles (Japandi, Vintage Revival, Modern Abstract, Moroccan Shag), color palettes (Hex/Pantone), trending motifs, Etsy search tags, and buyer insights.
+### 1. `get_carpet_design_styles`
+* **Purpose**: Explores 7 core carpet design categories: Japandi, Vintage Persian, Turkish Oushak, Modern Abstract, Moroccan Berber, Scandinavian Kilim, and Mughal Heritage.
+* **Returns**: Signature motifs, border styles, medallion types, fibers, and curated yarn swatches.
 
-### 2. `generate_carpet_ai_prompt`
-* **Purpose**: Generates structured, 6-layer top-down orthographic AI prompts for carpet and area rug design.
+### 2. `generate_carpet_design_prompt`
+* **Purpose**: Generates hyper-focused 6-layer 2D top-down flat lay AI prompts for carpet and area rug design.
 * **Returns**: Optimized AI prompt string with perspective lock (`top-down flat lay view`), weave texture specs, color palette, and seamless tile parameters (`--tile` for Midjourney).
 
-### 3. `validate_manufacturing_specs`
-* **Purpose**: Validates whether a proposed design is technically and financially manufacturable in Indian weaving centers (Bhadohi, Jaipur, Panipat).
-* **Returns**: Color count feasibility check, knot density recommendations, pile height limits, production lead times, and cost tier warnings.
+### 3. `refine_carpet_design_concept`
+* **Purpose**: Takes a rough carpet design concept and enriches it into a professional AI design prompt with authentic carpet craftsmanship terminology (Herati borders, abrash fading, lotus medallion, carved relief).
 
-### 4. `generate_weaver_tech_sheet`
-* **Purpose**: Formats a design idea into a complete Technical Naksha Specification Sheet for master weavers in India.
-* **Returns**: Warp/weft yarn specs, indexed yarn dye swatch list (max 12 colors), carving relief instructions, and master weaver quality checklists.
-
-### 5. `generate_etsy_listing_metadata`
-* **Purpose**: Generates high-converting Etsy SEO listing metadata.
-* **Returns**: Etsy SEO title (< 140 chars), 13 targeted search tags, storytelling product description, care instructions, and shipping specs.
+### 4. `get_carpet_color_palettes`
+* **Purpose**: Gets curated carpet color palettes (Earthy Terracotta, Mineral Japandi, Washed Indigo, Oushak Pastel, Gold Silk) specifically tailored for yarn dyeing and rug aesthetics.
 
 ---
 
@@ -37,7 +33,7 @@ This server bridges **overseas market intelligence (Etsy/US/EU trends)**, **AI p
 
 ### Build from Source
 ```bash
-git clone <repository-url>
+git clone https://github.com/AquibFaiyaz/Carpet_mcp.git
 cd Carpet_mcp
 npm install
 npm run build
@@ -83,15 +79,14 @@ Add to your workspace `.vscode/settings.json` or `.agents/mcp_config.json`:
 
 ---
 
-## Example Usage Prompts
+## Automated CI/CD & VPS Deployment
 
-Here are examples of how you can talk to an AI assistant once this MCP server is active:
-
-1. *"What rug styles and color palettes are trending on Etsy in the US for Japandi decor?"*
-2. *"Generate a Midjourney prompt for a Japandi hand-tufted wool carpet with high-low carved organic lines in muted terracotta and almond cream."*
-3. *"Check if a hand-tufted rug design with 15 colors and 3D carving is easy to weave in Bhadohi."*
-4. *"Create a technical Naksha spec sheet for an 8x10 ft Japandi rug named 'Komorebi Wave'."*
-5. *"Generate an Etsy listing title, 13 tags, and description for our new hand-tufted New Zealand wool rug."*
+This repository includes a GitHub Actions CI/CD pipeline ([`.github/workflows/deploy.yml`](.github/workflows/deploy.yml)).
+Every commit pushed to the `main` branch automatically:
+1. Runs TypeScript typechecking (`npm run typecheck`).
+2. Compiles production JS bundle (`npm run build`).
+3. Executes automated integration tests (`npx tsx scripts/test_tools.ts`).
+4. SSHs into your VPS server (`166.0.244.81`) and reloads PM2 (`pm2 restart carpet-mcp`).
 
 ---
 
