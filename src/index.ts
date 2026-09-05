@@ -202,7 +202,7 @@ async function startHttpServer() {
   const transports = new Map<string, StreamableHTTPServerTransport>();
 
   // Health check
-  app.get('/', (_req: Request, res: Response) => {
+  app.get('/health', (_req: Request, res: Response) => {
     res.json({
       name: 'Carpet Design Intelligence MCP Server',
       version: '2.0.0',
@@ -213,7 +213,19 @@ async function startHttpServer() {
   });
 
   // Streamable HTTP MCP endpoint — handles POST (messages) and GET (SSE stream) and DELETE (session close)
-  app.all('/mcp', async (req: Request, res: Response) => {
+  // Nginx proxies /mcp/ -> localhost:3005/, so we handle both / and /mcp
+  app.all(['/', '/mcp'], async (req: Request, res: Response) => {
+    // Return health info for browser GET without MCP headers
+    if (req.method === 'GET' && !req.headers['accept']?.includes('text/event-stream')) {
+      res.json({
+        name: 'Carpet Design Intelligence MCP Server',
+        version: '2.0.0',
+        status: 'active',
+        mcp: 'https://aquib.online/mcp',
+        tools: TOOL_DEFINITIONS.map(t => t.name)
+      });
+      return;
+    }
     // Handle DELETE for session termination
     if (req.method === 'DELETE') {
       const sessionId = req.headers['mcp-session-id'] as string | undefined;
