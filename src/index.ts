@@ -202,15 +202,22 @@ function createConfiguredServer(): Server {
   return server;
 }
 
-// ========== HTTP Server (SSE Transport + Streamable HTTP + ChatGPT Actions) ==========
+// ========== HTTP Server (Dual Transport + ChatGPT Actions) ==========
 async function startHttpServer() {
   const app = express();
   app.use(cors());
   app.use(express.json());
 
-  // Active transports
+  // Active transports by session ID
   const sseTransports = new Map<string, SSEServerTransport>();
   const streamableTransports = new Map<string, StreamableHTTPServerTransport>();
+
+  // Diagnostic logger
+  app.use((req, _res, next) => {
+    const sessId = req.headers['mcp-session-id'] || req.query.sessionId || '-';
+    console.log(`[HTTP] ${req.method} ${req.url} | Session: ${sessId} | UA: ${req.headers['user-agent'] || '-'}`);
+    next();
+  });
 
   const serverInfo = {
     name: 'Carpet Design Intelligence MCP Server',
@@ -353,12 +360,9 @@ async function startHttpServer() {
     });
   });
 
-  // ========== SSE Endpoint (for ChatGPT MCP SSE probe and SSE connections) ==========
-  // When ChatGPT or any MCP client probes with GET and Accept: text/event-stream,
-  // or accesses /sse or /mcp/sse, establish an SSEServerTransport.
+  // Helper: Start Legacy SSEServerTransport
   const handleSseConnection = async (req: Request, res: Response) => {
-    console.log(`[MCP SSE] Incoming connection from ${req.ip} to ${req.originalUrl || req.url}`);
-    // Endpoint for client to POST JSON-RPC messages to
+    console.log(`[MCP SSE] Creating legacy SSE connection from ${req.ip}`);
     const transport = new SSEServerTransport('/mcp/messages', res);
     const server = createConfiguredServer();
 
@@ -369,112 +373,120 @@ async function startHttpServer() {
 
     sseTransports.set(transport.sessionId, transport);
     await server.connect(transport);
-    console.log(`[MCP SSE] Active session established: ${transport.sessionId}`);
+    console.log(`[MCP SSE] Connected session: ${transport.sessionId}`);
   };
 
+  // Dedicated SSE endpoints (for clients specifying /sse or /mcp/sse)
   app.get(['/sse', '/mcp/sse'], handleSseConnection);
 
-  // GET / or /mcp:
-  // If Accept header contains text/event-stream -> SSE connection! (ChatGPT probe)
-  // Otherwise -> Return health info JSON
-  app.get(['/', '/mcp', '/mcp/'], async (req: Request, res: Response) => {
-    if (req.headers['accept']?.includes('text/event-stream')) {
-      return handleSseConnection(req, res);
-    }
-    res.json(serverInfo);
-  });
-
-  // ========== MCP Messages Endpoint (POST) ==========
-  // Receives JSON-RPC messages for established SSE sessions
-  const handleSsePostMessage = async (req: Request, res: Response) => {
+  // Dedicated POST message endpoints for legacy SSE clients
+  app.post(['/mcp/messages', '/messages', '/mcp/message', '/message'], async (req: Request, res: Response) => {
     const sessionId = (req.query.sessionId as string) || (req.headers['mcp-session-id'] as string);
     if (!sessionId) {
-      res.status(400).json({ error: 'Missing sessionId in query parameter or mcp-session-id header' });
+      res.status(400).json({ error: 'Missing sessionId query parameter or mcp-session-id header' });
       return;
     }
-
     const transport = sseTransports.get(sessionId);
     if (!transport) {
       res.status(404).json({ error: `Session not found: ${sessionId}` });
       return;
     }
-
     try {
       await transport.handlePostMessage(req, res, req.body);
     } catch (err: any) {
-      console.error('[MCP SSE] Error handling message:', err);
+      console.error('[MCP SSE] Error in handlePostMessage:', err);
       if (!res.headersSent) {
         res.status(500).json({ error: err?.message || String(err) });
       }
     }
-  };
+  });
 
-  app.post(['/mcp/messages', '/messages', '/mcp/message', '/message'], handleSsePostMessage);
+  // ========== Primary MCP Endpoint (Streamable HTTP + Probe Handler) ==========
+  // ChatGPT MCP, Claude, and modern MCP clients communicate with /mcp (or /)
+  app.all(['/', '/mcp', '/mcp/'], async (req: Request, res: Response) => {
+    const sessionIdHeader = req.headers['mcp-session-id'] as string | undefined;
+    const sessionIdQuery = req.query.sessionId as string | undefined;
+    const sessionId = sessionIdHeader || sessionIdQuery;
 
-  // POST / or /mcp:
-  // If sessionId is present -> SSE message handler
-  // If no sessionId -> Streamable HTTP transport (for modern Streamable HTTP MCP clients)
-  app.post(['/', '/mcp', '/mcp/'], async (req: Request, res: Response) => {
-    const sessionId = (req.query.sessionId as string) || (req.headers['mcp-session-id'] as string);
-
-    // If session belongs to SSE transport
-    if (sessionId && sseTransports.has(sessionId)) {
-      return handleSsePostMessage(req, res);
-    }
-
-    // If session belongs to Streamable HTTP transport
+    // 1. Existing Streamable HTTP Session
     if (sessionId && streamableTransports.has(sessionId)) {
       const transport = streamableTransports.get(sessionId)!;
       await transport.handleRequest(req, res, req.body);
       return;
     }
 
-    // New Streamable HTTP session initialization
-    if (!sessionId) {
-      const transport = new StreamableHTTPServerTransport({
+    // 2. Existing SSE Session (POST message to /mcp?sessionId=...)
+    if (sessionId && sseTransports.has(sessionId)) {
+      if (req.method === 'POST') {
+        const transport = sseTransports.get(sessionId)!;
+        await transport.handlePostMessage(req, res, req.body);
+        return;
+      }
+    }
+
+    // 3. Unknown Session ID provided
+    if (sessionId) {
+      console.warn(`[MCP Router] Session ID not found: ${sessionId}`);
+      res.status(404).json({ error: 'Session not found' });
+      return;
+    }
+
+    // 4. No Session ID provided:
+    // 4A. GET Request
+    if (req.method === 'GET') {
+      // Legacy SSE probe without session ID (Accept: text/event-stream)
+      if (req.headers['accept']?.includes('text/event-stream')) {
+        return handleSseConnection(req, res);
+      }
+      // Browser GET -> Display status JSON
+      res.json(serverInfo);
+      return;
+    }
+
+    // 4B. POST Request -> New Streamable HTTP Session Initialization
+    if (req.method === 'POST') {
+      console.log(`[Streamable HTTP] Initializing new session...`);
+      let transport: StreamableHTTPServerTransport;
+
+      transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => randomUUID(),
+        onsessioninitialized: (newId: string) => {
+          console.log(`[Streamable HTTP] onsessioninitialized: ${newId}`);
+          streamableTransports.set(newId, transport);
+        },
+        onsessionclosed: (closedId: string) => {
+          console.log(`[Streamable HTTP] onsessionclosed: ${closedId}`);
+          streamableTransports.delete(closedId);
+        }
       });
+
       const server = createConfiguredServer();
 
       transport.onclose = () => {
         if (transport.sessionId) {
+          console.log(`[Streamable HTTP] onclose: ${transport.sessionId}`);
           streamableTransports.delete(transport.sessionId);
         }
       };
 
       await server.connect(transport);
+      await transport.handleRequest(req, res, req.body);
 
-      if (transport.sessionId) {
+      // Verify session is stored
+      if (transport.sessionId && !streamableTransports.has(transport.sessionId)) {
+        console.log(`[Streamable HTTP] Registering session: ${transport.sessionId}`);
         streamableTransports.set(transport.sessionId, transport);
       }
-
-      await transport.handleRequest(req, res, req.body);
       return;
     }
 
-    res.status(404).json({ error: 'Session not found' });
-  });
-
-  // DELETE for session termination
-  app.delete(['/', '/mcp', '/mcp/messages', '/messages'], async (req: Request, res: Response) => {
-    const sessionId = (req.query.sessionId as string) || (req.headers['mcp-session-id'] as string);
-    if (sessionId) {
-      if (sseTransports.has(sessionId)) {
-        const t = sseTransports.get(sessionId)!;
-        await t.close();
-        sseTransports.delete(sessionId);
-        res.status(200).end();
-        return;
-      }
-      if (streamableTransports.has(sessionId)) {
-        const t = streamableTransports.get(sessionId)!;
-        await t.close();
-        streamableTransports.delete(sessionId);
-        res.status(200).end();
-        return;
-      }
+    // 4C. DELETE Request without session ID
+    if (req.method === 'DELETE') {
+      res.status(400).json({ error: 'Missing mcp-session-id header' });
+      return;
     }
-    res.status(404).end();
+
+    res.status(405).json({ error: 'Method Not Allowed' });
   });
 
   // ========== REST API Endpoints (for direct HTTP calls & ChatGPT Actions) ==========
@@ -500,7 +512,7 @@ async function startHttpServer() {
 
   app.listen(PORT, () => {
     console.log(`Carpet Design MCP Server running on http://localhost:${PORT}`);
-    console.log(`- MCP SSE Probe / URL: https://aquib.online/mcp`);
+    console.log(`- MCP Endpoint: https://aquib.online/mcp`);
     console.log(`- MCP SSE Direct: https://aquib.online/mcp/sse`);
     console.log(`- OpenAPI 3.1.0: https://aquib.online/mcp/openapi.json`);
   });
