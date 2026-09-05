@@ -250,7 +250,7 @@ async function startHttpServer() {
       return;
     }
 
-    if (req.method === 'POST' && !sessionId) {
+    if ((req.method === 'POST' || req.method === 'GET') && !sessionId) {
       // New session — create server + transport
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => randomUUID(),
