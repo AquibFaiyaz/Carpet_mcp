@@ -252,7 +252,7 @@ async function startHttpServer() {
   // ChatGPT Actions OpenAPI 3.0 Schema Endpoint
   app.get(['/openapi.json', '/mcp/openapi.json'], (req: Request, res: Response) => {
     res.json({
-      openapi: '3.0.0',
+      openapi: '3.1.0',
       info: {
         title: 'Carpet Design Intelligence API for ChatGPT',
         version: '2.0.0',
